@@ -81,7 +81,76 @@ function loadPickerApi(){return new Promise((resolve,reject)=>{
   if(!window.gapi){reject(new Error('Google API Loader no está disponible.'));return}
   gapi.load('picker',{callback:()=>{pickerApiLoaded=true;resolve()},onerror:()=>reject(new Error('No se pudo cargar Google Picker.'))});
 });}
+function isMobileDevice(){
+  return /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent) || window.matchMedia('(max-width: 768px)').matches;
+}
+
+async function openMobileDriveSelector(){
+  if(!window.google?.accounts?.oauth2){
+    renderDriveState('<div class="warning-box">Google todavía está cargando. Espera unos segundos y vuelve a intentarlo.</div>');
+    return;
+  }
+  const show=async()=>{
+    if(!driveAccessToken){return;}
+    try{
+      const q="trashed = false and mimeType = 'application/vnd.google-apps.spreadsheet'";
+      const url='https://www.googleapis.com/drive/v3/files?'+new URLSearchParams({
+        q,
+        pageSize:'100',
+        orderBy:'modifiedTime desc',
+        fields:'files(id,name,mimeType,modifiedTime,webViewLink,driveId),nextPageToken',
+        includeItemsFromAllDrives:'true',
+        supportsAllDrives:'true'
+      });
+      const res=await fetch(url,{headers:{Authorization:'Bearer '+driveAccessToken}});
+      const data=await res.json();
+      if(!res.ok) throw new Error(data?.error?.message||'No se pudieron obtener tus hojas de Google Drive.');
+      const files=data.files||[];
+      let overlay=document.getElementById('mobileDriveSelector');
+      if(!overlay){
+        overlay=document.createElement('div');
+        overlay.id='mobileDriveSelector';
+        overlay.className='drive-selector-overlay';
+        overlay.innerHTML=`<div class="drive-selector-card">
+          <div class="drive-selector-head"><div><h3>📂 Elegir desde Google Drive</h3><p class="muted">Selecciona una hoja de cálculo</p></div><button id="closeMobileDriveSelector" class="ghost">✕</button></div>
+          <input id="mobileDriveSearch" class="drive-selector-search" type="search" placeholder="🔎 Buscar una hoja...">
+          <div id="mobileDriveList" class="drive-selector-list"></div>
+        </div>`;
+        document.body.appendChild(overlay);
+        document.getElementById('closeMobileDriveSelector').onclick=()=>overlay.remove();
+        overlay.addEventListener('click',e=>{if(e.target===overlay)overlay.remove()});
+      }
+      const list=document.getElementById('mobileDriveList');
+      const renderList=(term='')=>{
+        const t=term.toLowerCase().trim();
+        const filtered=files.filter(f=>!t||f.name.toLowerCase().includes(t));
+        list.innerHTML=filtered.length?filtered.map(f=>`<button class="drive-file-row" data-id="${esc(f.id)}"><span class="sheet-icon">📊</span><span class="drive-file-main"><b>${esc(f.name)}</b><small>${f.modifiedTime?new Date(f.modifiedTime).toLocaleDateString('es-ES'):''}${f.driveId?' · Unidad compartida':''}</small></span><span>›</span></button>`).join(''):'<p class="muted drive-empty">No se encontraron hojas de cálculo.</p>';
+        list.querySelectorAll('.drive-file-row').forEach(btn=>btn.onclick=()=>{
+          const f=files.find(x=>x.id===btn.dataset.id); if(!f)return;
+          const saved=JSON.parse(localStorage.getItem('misTareasPickedSheets')||'[]');
+          const url=f.webViewLink||('https://docs.google.com/spreadsheets/d/'+f.id+'/edit');
+          if(!saved.some(x=>x.id===f.id)) saved.unshift({id:f.id,name:f.name,url,addedAt:new Date().toISOString()});
+          localStorage.setItem('misTareasPickedSheets',JSON.stringify(saved.slice(0,100)));
+          renderPickedSheets();
+          overlay.remove();
+          renderDriveState('<div class="success-box">Hoja seleccionada correctamente.</div>');
+        });
+      };
+      renderList();
+      document.getElementById('mobileDriveSearch').oninput=e=>renderList(e.target.value);
+    }catch(e){
+      renderDriveState('<div class="error-box">No se pudieron cargar las hojas de Google Drive: '+esc(e.message||String(e))+'</div>');
+    }
+  };
+  if(driveAccessToken){show();return}
+  const client=makeGoogleTokenClient((response)=>handleGoogleToken(response,show));
+  if(client) client.requestAccessToken({prompt:'consent'});
+}
+
 async function openGooglePicker(){
+  if(isMobileDevice()){
+    return openMobileDriveSelector();
+  }
   const clientId=getClientId(), apiKey=getApiKey(), appId=getProjectNumber();
   if(!clientId){renderDriveState('<div class="warning-box">Falta el Google OAuth Client ID. Ve a Configuración.</div>');return}
   if(!apiKey || !appId){renderDriveState('<div class="warning-box">Faltan la API Key y/o el número de proyecto. Ve a Configuración.</div>');return}
@@ -107,6 +176,7 @@ async function openGooglePicker(){
   const client=makeGoogleTokenClient((response)=>handleGoogleToken(response,show));
   if(client) client.requestAccessToken({prompt:'consent'});
 }
+
 function pickerCallback(data){
   if(data.action!==google.picker.Action.PICKED)return;
   const docs=data[google.picker.Response.DOCUMENTS]||[];
